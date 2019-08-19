@@ -852,7 +852,7 @@ test('create wildcard alias for deployment', async t => {
     }
   );
 
-  const goal = `> Success! https://${hosts.alias} now points to https://${
+  const goal = `> Success! ${hosts.alias} now points to https://${
     hosts.deployment
   }`;
 
