@@ -9,6 +9,7 @@ import {
   download,
   runNpmInstall,
   runPackageJsonScript,
+  PrepareCacheOptions,
   runShellScript,
   getNodeVersion,
   getSpawnOptions,
@@ -17,6 +18,7 @@ import {
   BuildOptions,
   Config,
 } from '@now/build-utils';
+import { build as nodeBuilder } from '@now/node';
 
 interface PackageJson {
   scripts?: {
@@ -193,7 +195,7 @@ export async function build({
       if (framework && framework.defaultRoutes) {
         // We need to delete the routes for `now dev`
         // since in this case it will get proxied to
-        // a custom server we don't have controll over
+        // a custom server we don't have control over
         delete framework.defaultRoutes;
       }
 
@@ -256,7 +258,10 @@ export async function build({
         console.log('Detected dev server for %j', entrypoint);
       }
 
-      let srcBase = mountpoint.replace(/^\.\/?/, '');
+      // Without basePath, srcBase would be /app, could be we want dev server listening at /
+      let srcBase = config.basePath
+        ? config.basePath.replace(/^\//, '')
+        : mountpoint.replace(/^\.\/?/, '');
 
       if (srcBase.length > 0) {
         srcBase = `/${srcBase}`;
@@ -316,15 +321,30 @@ export async function build({
       }
 
       validateDistDir(distPath, meta.isDev, config);
-      output = await glob('**', distPath, mountpoint);
 
+      output = await glob('**', distPath, mountpoint);
+      console.log('output', output);
       if (framework && framework.defaultRoutes) {
         routes.push(...framework.defaultRoutes);
       }
     }
 
     const watch = [path.join(mountpoint.replace(/^\.\/?/, ''), '**/*')];
-    return { routes, watch, output };
+    const result = { routes, watch, output };
+
+    const hasMain = pkg.main || config.main;
+    const useMain = !meta.isDev || !pkg.scripts[devScript];
+    if (hasMain && useMain) {
+      const mainPath = config.main || path.relative(workPath, path.join(entrypointDir, pkg.main));
+      const nodeConfig = {
+        ...arguments[0], // All the args passed to this build.
+        entrypoint: mainPath,
+      };
+      const nodeResult = await nodeBuilder(nodeConfig);
+      result.watch.push(...nodeResult.watch);
+      Object.assign(result.output, nodeResult.output);
+    }
+    return result;
   }
 
   if (!config.zeroConfig && entrypointName.endsWith('.sh')) {
@@ -351,3 +371,24 @@ export async function build({
 
   throw new Error(message);
 }
+
+export const prepareCache = async ({
+                                     workPath,
+                                     entrypoint,
+                                   }: PrepareCacheOptions) => {
+  console.log('preparing cache ...');
+  const entrypointDir = path.dirname(entrypoint);
+  const entrypointPath = path.join(workPath, entrypointDir);
+
+  console.log('producing cache file manifest ...');
+  const cacheEntrypoint = path.relative(workPath, entrypointPath);
+  const cache = {
+    ...(await glob(path.join(cacheEntrypoint, 'node_modules/**'), workPath)),
+    ...(await glob(path.join(cacheEntrypoint, 'build/**'), workPath)),
+    ...(await glob(path.join(cacheEntrypoint, 'scripts/**'), workPath)),
+    ...(await glob(path.join(cacheEntrypoint, 'package-lock.json'), workPath)),
+    ...(await glob(path.join(cacheEntrypoint, 'yarn.lock'), workPath)),
+  };
+  console.log('cache file manifest produced');
+  return cache;
+};
